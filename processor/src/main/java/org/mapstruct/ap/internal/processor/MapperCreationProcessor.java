@@ -35,6 +35,7 @@ import org.mapstruct.ap.internal.gem.NullValueMappingStrategyGem;
 import org.mapstruct.ap.internal.model.AdditionalAnnotationsBuilder;
 import org.mapstruct.ap.internal.model.Annotation;
 import org.mapstruct.ap.internal.model.BeanMappingMethod;
+import org.mapstruct.ap.internal.model.ReferenceMappingMethod;
 import org.mapstruct.ap.internal.model.ContainerMappingMethod;
 import org.mapstruct.ap.internal.model.ContainerMappingMethodBuilder;
 import org.mapstruct.ap.internal.model.Decorator;
@@ -85,7 +86,9 @@ import static org.mapstruct.ap.internal.util.Collections.join;
  */
 public class MapperCreationProcessor implements ModelElementProcessor<List<SourceMethod>, Mapper> {
 
-    /** Modifiers for public "constant" e.g. "public static final" */
+    /**
+     * Modifiers for public "constant" e.g. "public static final"
+     */
     private static final List<Modifier> PUBLIC_CONSTANT_MODIFIERS = Arrays.asList( PUBLIC, STATIC, FINAL );
 
     private ElementUtils elementUtils;
@@ -101,6 +104,7 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
 
     @Override
     public Mapper process(ProcessorContext context, TypeElement mapperTypeElement, List<SourceMethod> sourceModel) {
+
         this.elementUtils = context.getElementUtils();
         this.typeUtils = context.getTypeUtils();
         this.messager =
@@ -169,30 +173,65 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
     }
 
     private boolean hasSingletonInstance(TypeMirror mapper) {
-      return typeUtils.asElement( mapper ).getEnclosedElements().stream()
-          .anyMatch( a -> isPublicConstantOfType( a, "INSTANCE", mapper ) );
+        return typeUtils.asElement( mapper ).getEnclosedElements().stream()
+            .anyMatch( a -> isPublicConstantOfType( a, "INSTANCE", mapper ) );
     }
 
     /**
      * @return true if the <code>element</code> is a "public static final" field (e.g. a constant)
-     *         named <code>fieldName</code> of type "fieldType"
+     * named <code>fieldName</code> of type "fieldType"
      */
     private boolean isPublicConstantOfType(Element element, String fieldName, TypeMirror fieldType) {
-      return element.getKind().isField() &&
-             element.getModifiers().containsAll( PUBLIC_CONSTANT_MODIFIERS ) &&
-             element.getSimpleName().contentEquals( fieldName ) &&
-             typeUtils.isSameType( element.asType(), fieldType );
+        return element.getKind().isField() &&
+            element.getModifiers().containsAll( PUBLIC_CONSTANT_MODIFIERS ) &&
+            element.getSimpleName().contentEquals( fieldName ) &&
+            typeUtils.isSameType( element.asType(), fieldType );
     }
 
     private Mapper getMapper(TypeElement element, MapperOptions mapperOptions, List<SourceMethod> methods) {
 
         List<MappingMethod> mappingMethods = getMappingMethods( mapperOptions, methods );
+
         mappingMethods.addAll( mappingContext.getUsedSupportedMappings() );
         mappingMethods.addAll( mappingContext.getMappingsToGenerate() );
 
         // handle fields
         List<Field> fields = new ArrayList<>( mappingContext.getMapperReferences() );
-        Set<Field> supportingFieldSet = new LinkedHashSet<>(mappingContext.getUsedSupportedFields());
+
+        for ( MappingMethod method : mappingMethods ) {
+            if ( method instanceof ReferenceMappingMethod ) {
+                ReferenceMappingMethod refMethod = (ReferenceMappingMethod) method;
+                if ( refMethod.getDelegateCall() != null && refMethod.getDelegateCall().getDeclaringMapper() != null ) {
+                    // This is a cross-mapper reference - ensure the mapper field is included and marked as used
+                    MapperReference mapperRef = refMethod.getDelegateCall().getDeclaringMapper();
+
+                    // Check if this mapper reference is already in the fields list
+                    boolean alreadyExists = false;
+                    for ( Field field : fields ) {
+                        if ( field instanceof MapperReference ) {
+                            MapperReference existingMapperRef = (MapperReference) field;
+                            if ( existingMapperRef.getType().equals( mapperRef.getType() ) ) {
+                                alreadyExists = true;
+                                // MARK AS USED: This field is needed for cross-mapper delegation
+                                existingMapperRef.setUsed( true );
+                                existingMapperRef.setTypeRequiresImport( true );
+                                break;
+                            }
+                        }
+                    }
+
+                    // If not, add it
+                    if ( !alreadyExists ) {
+                        // MARK AS USED: This field is needed for cross-mapper delegation
+                        mapperRef.setUsed( true );
+                        mapperRef.setTypeRequiresImport( true );
+                        fields.add( mapperRef );
+                    }
+                }
+            }
+        }
+
+        Set<Field> supportingFieldSet = new LinkedHashSet<>( mappingContext.getUsedSupportedFields() );
         addAllFieldsIn( mappingContext.getUsedSupportedMappings(), supportingFieldSet );
         fields.addAll( supportingFieldSet );
 
@@ -204,7 +243,7 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             .element( element )
             .methods( mappingMethods )
             .fields( fields )
-            .constructorFragments(  constructorFragments )
+            .constructorFragments( constructorFragments )
             .options( options )
             .versionInformation( versionInformation )
             .decorator( getDecorator( element, methods, mapperOptions ) )
@@ -219,15 +258,18 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             .build();
 
         if ( !mappingContext.getForgedMethodsUnderCreation().isEmpty() ) {
-            messager.printMessage( element, Message.GENERAL_NOT_ALL_FORGED_CREATED,
-                mappingContext.getForgedMethodsUnderCreation().keySet() );
+            messager.printMessage(
+                element, Message.GENERAL_NOT_ALL_FORGED_CREATED,
+                mappingContext.getForgedMethodsUnderCreation().keySet()
+            );
         }
 
         if ( element.getModifiers().contains( Modifier.PRIVATE ) ) {
             // If the mapper element is private then we should report an error
             // we can't generate an implementation for a private mapper
             mappingContext.getMessager()
-                .printMessage( element,
+                .printMessage(
+                    element,
                     Message.GENERAL_CANNOT_IMPLEMENT_PRIVATE_MAPPER,
                     element.getSimpleName().toString(),
                     element.getKind() == ElementKind.INTERFACE ? "interface" : "class"
@@ -310,7 +352,7 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
         return decorator;
     }
 
-    private SortedSet<Type> getExtraImports(TypeElement element,  MapperOptions mapperOptions) {
+    private SortedSet<Type> getExtraImports(TypeElement element, MapperOptions mapperOptions) {
         SortedSet<Type> extraImports = new TreeSet<>();
 
 
@@ -418,6 +460,22 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
                     streamMappingMethod.getFactoryMethod() != null || method.getResultType().isStreamType();
                 mappingMethods.add( streamMappingMethod );
             }
+            else if ( method.isReferenceMapping() ) {
+                // Handle @ReferenceMapping methods with proper delegation
+                this.messager.note( 1, Message.REFERENCEMAPPING_CREATE_NOTE, method );
+
+                ReferenceMappingMethod referenceMappingMethod = new ReferenceMappingMethod.Builder()
+                    .mappingContext( mappingContext )
+                    .sourceMethod( method )
+                    .build();
+
+                // We can consider that the reference mapping method can always be constructed. If there is a problem
+                // it would have been reported in its build
+                hasFactoryMethod = true;
+                if ( referenceMappingMethod != null ) {
+                    mappingMethods.add( referenceMappingMethod );
+                }
+            }
             else {
                 this.messager.note( 1, Message.BEANMAPPING_CREATE_NOTE, method );
                 BuilderGem builder = method.getOptions().getBeanMapping().getBuilder();
@@ -457,11 +515,11 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
         }
 
         Javadoc javadoc = new Javadoc.Builder()
-                .value( javadocGem.value().getValue() )
-                .authors( javadocGem.authors().getValue() )
-                .deprecated( javadocGem.deprecated().getValue() )
-                .since( javadocGem.since().getValue() )
-                .build();
+            .value( javadocGem.value().getValue() )
+            .authors( javadocGem.authors().getValue() )
+            .deprecated( javadocGem.deprecated().getValue() )
+            .since( javadocGem.since().getValue() )
+            .build();
 
         return javadoc;
     }
@@ -474,8 +532,10 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
         return null;
     }
 
-    private <M extends ContainerMappingMethod> M createWithElementMappingMethod(SourceMethod method,
-             MappingMethodOptions mappingMethodOptions, ContainerMappingMethodBuilder<?, M> builder) {
+    private <M extends ContainerMappingMethod> M createWithElementMappingMethod(
+        SourceMethod method,
+        MappingMethodOptions mappingMethodOptions,
+        ContainerMappingMethodBuilder<?, M> builder) {
 
         FormattingParameters formattingParameters = null;
         SelectionParameters selectionParameters = null;
@@ -504,7 +564,8 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             messager.printMessage(
                 method.getExecutable(),
                 Message.INHERITCONFIGURATION_CYCLE,
-                Strings.join( initializingMethods, " -> " ) );
+                Strings.join( initializingMethods, " -> " )
+            );
             return;
         }
 
@@ -514,10 +575,12 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
         List<SourceMethod> applicableReversePrototypeMethods = method.getApplicableReversePrototypeMethods();
 
         SourceMethod inverseTemplateMethod =
-            getInverseTemplateMethod( join( availableMethods, applicableReversePrototypeMethods ),
+            getInverseTemplateMethod(
+                join( availableMethods, applicableReversePrototypeMethods ),
                 method,
                 initializingMethods,
-                mapperConfig );
+                mapperConfig
+            );
 
         List<SourceMethod> applicablePrototypeMethods = method.getApplicablePrototypeMethods();
 
@@ -526,7 +589,8 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
                 join( availableMethods, applicablePrototypeMethods ),
                 method,
                 initializingMethods,
-                mapperConfig );
+                mapperConfig
+            );
 
         // apply defined (@InheritConfiguration, @InheritInverseConfiguration) mappings
         if ( forwardTemplateMethod != null ) {
@@ -543,28 +607,34 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             // but.. there should not be an @InheritedConfiguration
             if ( forwardTemplateMethod == null && inheritanceStrategy.isApplyForward() ) {
                 if ( applicablePrototypeMethods.size() == 1 ) {
-                    mappingOptions.applyInheritedOptions( method, first( applicablePrototypeMethods ), false,
-                        annotationMirror );
+                    mappingOptions.applyInheritedOptions(
+                        method, first( applicablePrototypeMethods ), false,
+                        annotationMirror
+                    );
                 }
                 else if ( applicablePrototypeMethods.size() > 1 ) {
                     messager.printMessage(
                         method.getExecutable(),
                         Message.INHERITCONFIGURATION_MULTIPLE_PROTOTYPE_METHODS_MATCH,
-                        Strings.join( applicablePrototypeMethods, ", " ) );
+                        Strings.join( applicablePrototypeMethods, ", " )
+                    );
                 }
             }
 
             // or no @InheritInverseConfiguration
             if ( inverseTemplateMethod == null && inheritanceStrategy.isApplyReverse() ) {
                 if ( applicableReversePrototypeMethods.size() == 1 ) {
-                    mappingOptions.applyInheritedOptions( method, first( applicableReversePrototypeMethods ), true,
-                        annotationMirror );
+                    mappingOptions.applyInheritedOptions(
+                        method, first( applicableReversePrototypeMethods ), true,
+                        annotationMirror
+                    );
                 }
                 else if ( applicableReversePrototypeMethods.size() > 1 ) {
                     messager.printMessage(
                         method.getExecutable(),
                         Message.INHERITINVERSECONFIGURATION_MULTIPLE_PROTOTYPE_METHODS_MATCH,
-                        Strings.join( applicableReversePrototypeMethods, ", " ) );
+                        Strings.join( applicableReversePrototypeMethods, ", " )
+                    );
                 }
             }
         }
@@ -642,8 +712,10 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             }
         }
 
-        return extractInitializedOptions( resultMethod, rawMethods, mapperConfig, initializingMethods,
-            getAnnotationMirror( inverseConfiguration ) );
+        return extractInitializedOptions(
+            resultMethod, rawMethods, mapperConfig, initializingMethods,
+            getAnnotationMirror( inverseConfiguration )
+        );
     }
 
     private AnnotationMirror getAnnotationMirror(InheritInverseConfigurationGem inverseConfiguration) {
@@ -651,14 +723,16 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
     }
 
     private SourceMethod extractInitializedOptions(SourceMethod resultMethod,
-                                                     List<SourceMethod> rawMethods,
-                                                     MapperOptions mapperConfig,
-                                                     List<SourceMethod> initializingMethods,
-                                                     AnnotationMirror annotationMirror) {
+                                                   List<SourceMethod> rawMethods,
+                                                   MapperOptions mapperConfig,
+                                                   List<SourceMethod> initializingMethods,
+                                                   AnnotationMirror annotationMirror) {
         if ( resultMethod != null ) {
             if ( !resultMethod.getOptions().isFullyInitialized() ) {
-                mergeInheritedOptions( resultMethod, mapperConfig, rawMethods, initializingMethods,
-                    annotationMirror );
+                mergeInheritedOptions(
+                    resultMethod, mapperConfig, rawMethods, initializingMethods,
+                    annotationMirror
+                );
             }
 
             return resultMethod;
@@ -726,8 +800,10 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             }
         }
 
-        return extractInitializedOptions( resultMethod, rawMethods, mapperConfig, initializingMethods,
-                                          getAnnotationMirror( inheritConfiguration ) );
+        return extractInitializedOptions(
+            resultMethod, rawMethods, mapperConfig, initializingMethods,
+            getAnnotationMirror( inheritConfiguration )
+        );
     }
 
     private AnnotationMirror getAnnotationMirror(InheritConfigurationGem inheritConfiguration) {
@@ -744,7 +820,8 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
 
         String name = inverseGem.name().get();
         if ( name.isEmpty() ) {
-            messager.printMessage( method.getExecutable(),
+            messager.printMessage(
+                method.getExecutable(),
                 inverseGem.mirror(),
                 Message.INHERITINVERSECONFIGURATION_DUPLICATES,
                 Strings.join( candidateNames, "(), " )
@@ -752,7 +829,8 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
             );
         }
         else {
-            messager.printMessage( method.getExecutable(),
+            messager.printMessage(
+                method.getExecutable(),
                 inverseGem.mirror(),
                 Message.INHERITINVERSECONFIGURATION_INVALID_NAME,
                 Strings.join( candidateNames, "(), " ),
@@ -763,9 +841,10 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
     }
 
     private void reportErrorWhenSeveralNamesMatch(List<SourceMethod> candidates, SourceMethod method,
-          InheritInverseConfigurationGem inverseGem) {
+                                                  InheritInverseConfigurationGem inverseGem) {
 
-        messager.printMessage( method.getExecutable(),
+        messager.printMessage(
+            method.getExecutable(),
             inverseGem.mirror(),
             Message.INHERITINVERSECONFIGURATION_DUPLICATE_MATCHES,
             inverseGem.name().get(),
@@ -775,9 +854,10 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
     }
 
     private void reportErrorWhenNonMatchingName(SourceMethod onlyCandidate, SourceMethod method,
-                                            InheritInverseConfigurationGem inverseGem) {
+                                                InheritInverseConfigurationGem inverseGem) {
 
-        messager.printMessage( method.getExecutable(),
+        messager.printMessage(
+            method.getExecutable(),
             inverseGem.mirror(),
             Message.INHERITINVERSECONFIGURATION_NO_NAME_MATCH,
             inverseGem.name().get(),
@@ -795,7 +875,8 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
 
         String name = gem.name().get();
         if ( name.isEmpty() ) {
-            messager.printMessage( method.getExecutable(),
+            messager.printMessage(
+                method.getExecutable(),
                 gem.mirror(),
                 Message.INHERITCONFIGURATION_DUPLICATES,
                 Strings.join( candidateNames, "(), " )
@@ -836,7 +917,7 @@ public class MapperCreationProcessor implements ModelElementProcessor<List<Sourc
         );
     }
 
-    private boolean isConsistent( JavadocGem gem, TypeElement element, FormattingMessager messager ) {
+    private boolean isConsistent(JavadocGem gem, TypeElement element, FormattingMessager messager) {
         if ( !gem.value().hasValue()
             && !gem.authors().hasValue()
             && !gem.deprecated().hasValue()

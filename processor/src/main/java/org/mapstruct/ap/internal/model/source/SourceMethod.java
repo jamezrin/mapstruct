@@ -61,186 +61,16 @@ public class SourceMethod implements Method {
     private final List<Parameter> contextParameters;
     private final ParameterProvidedMethods contextProvidedMethods;
     private final List<Type> typeParameters;
-
+    private final boolean hasObjectFactoryAnnotation;
+    private final boolean verboseLogging;
+    private final org.mapstruct.ap.internal.gem.ReferenceMappingGem referenceMappingAnnotation;
     private List<String> parameterNames;
-
     private List<SourceMethod> applicablePrototypeMethods;
     private List<SourceMethod> applicableReversePrototypeMethods;
-
     private Boolean isValueMapping;
     private Boolean isIterableMapping;
     private Boolean isMapMapping;
     private Boolean isStreamMapping;
-    private final boolean hasObjectFactoryAnnotation;
-
-    private final boolean verboseLogging;
-
-    public static class Builder {
-
-        private Type declaringMapper = null;
-        private Type definingType = null;
-        private ExecutableElement executable;
-        private List<Parameter> parameters;
-        private Type returnType = null;
-        private List<Type> exceptionTypes;
-        private Set<MappingOptions> mappings;
-        private IterableMappingOptions iterableMapping = null;
-        private MapMappingOptions mapMapping = null;
-        private BeanMappingOptions beanMapping = null;
-        private TypeUtils typeUtils;
-        private TypeFactory typeFactory = null;
-        private MapperOptions mapper = null;
-        private List<SourceMethod> prototypeMethods = Collections.emptyList();
-        private List<ValueMappingOptions> valueMappings;
-        private EnumMappingOptions enumMappingOptions;
-        private ParameterProvidedMethods contextProvidedMethods;
-        private Set<ConditionOptions> conditionOptions;
-        private List<Type> typeParameters;
-        private Set<SubclassMappingOptions> subclassMappings;
-
-        private boolean verboseLogging;
-        private SubclassValidator subclassValidator;
-
-        public Builder setDeclaringMapper(Type declaringMapper) {
-            this.declaringMapper = declaringMapper;
-            return this;
-        }
-
-        public Builder setExecutable(ExecutableElement executable) {
-            this.executable = executable;
-            return this;
-        }
-
-        public Builder setParameters(List<Parameter> parameters) {
-            this.parameters = parameters;
-            return this;
-        }
-
-        public Builder setReturnType(Type returnType) {
-            this.returnType = returnType;
-            return this;
-        }
-
-        public Builder setExceptionTypes(List<Type> exceptionTypes) {
-            this.exceptionTypes = exceptionTypes;
-            return this;
-        }
-
-        public Builder setMappingOptions(Set<MappingOptions> mappings) {
-            this.mappings = mappings;
-            return this;
-        }
-
-        public Builder setIterableMappingOptions(IterableMappingOptions iterableMapping) {
-            this.iterableMapping = iterableMapping;
-            return this;
-        }
-
-        public Builder setMapMappingOptions(MapMappingOptions mapMapping) {
-            this.mapMapping = mapMapping;
-            return this;
-        }
-
-        public Builder setBeanMappingOptions(BeanMappingOptions beanMapping) {
-            this.beanMapping = beanMapping;
-            return this;
-        }
-
-        public Builder setValueMappingOptionss(List<ValueMappingOptions> valueMappings) {
-            this.valueMappings = valueMappings;
-            return this;
-        }
-
-        public Builder setEnumMappingOptions(EnumMappingOptions enumMappingOptions) {
-            this.enumMappingOptions = enumMappingOptions;
-            return this;
-        }
-
-        public Builder setSubclassMappings(Set<SubclassMappingOptions> subclassMappings) {
-            this.subclassMappings = subclassMappings;
-            return this;
-        }
-
-        public Builder setSubclassValidator(SubclassValidator subclassValidator) {
-            this.subclassValidator = subclassValidator;
-            return this;
-        }
-
-        public Builder setTypeUtils(TypeUtils typeUtils) {
-            this.typeUtils = typeUtils;
-            return this;
-        }
-
-        public Builder setTypeFactory(TypeFactory typeFactory) {
-            this.typeFactory = typeFactory;
-            return this;
-        }
-
-        public Builder setMapper(MapperOptions mapper) {
-            this.mapper = mapper;
-            return this;
-        }
-
-        public Builder setPrototypeMethods(List<SourceMethod> prototypeMethods) {
-            this.prototypeMethods = prototypeMethods;
-            return this;
-        }
-
-        public Builder setDefiningType(Type definingType) {
-            this.definingType = definingType;
-            return this;
-        }
-
-        public Builder setContextProvidedMethods(ParameterProvidedMethods contextProvidedMethods) {
-            this.contextProvidedMethods = contextProvidedMethods;
-            return this;
-        }
-
-        public Builder setConditionOptions(Set<ConditionOptions> conditionOptions) {
-            this.conditionOptions = conditionOptions;
-            return this;
-        }
-
-        public Builder setVerboseLogging(boolean verboseLogging) {
-            this.verboseLogging = verboseLogging;
-            return this;
-        }
-
-        public SourceMethod build() {
-
-            if ( mappings == null ) {
-                mappings = Collections.emptySet();
-            }
-
-            if ( subclassMappings == null ) {
-                subclassMappings = Collections.emptySet();
-            }
-
-            MappingMethodOptions mappingMethodOptions = new MappingMethodOptions(
-                mapper,
-                mappings,
-                iterableMapping,
-                mapMapping,
-                beanMapping,
-                enumMappingOptions,
-                valueMappings,
-                subclassMappings,
-                subclassValidator
-            );
-
-            ConditionMethodOptions conditionMethodOptions =
-                conditionOptions != null ? new ConditionMethodOptions( conditionOptions ) :
-                    ConditionMethodOptions.empty();
-
-            this.typeParameters = this.executable.getTypeParameters()
-                .stream()
-                .map( Element::asType )
-                .map( typeFactory::getType )
-                .collect( Collectors.toList() );
-
-            return new SourceMethod( this, mappingMethodOptions, conditionMethodOptions );
-        }
-    }
 
     private SourceMethod(Builder builder, MappingMethodOptions mappingMethodOptions,
                          ConditionMethodOptions conditionMethodOptions) {
@@ -272,6 +102,40 @@ public class SourceMethod implements Method {
         this.mapperToImplement = builder.definingType;
 
         this.verboseLogging = builder.verboseLogging;
+        this.referenceMappingAnnotation = builder.referenceMappingAnnotation;
+    }
+
+    private static boolean allParametersAreAssignable(List<Parameter> fromParams, List<Parameter> toParams) {
+        if ( fromParams.size() == toParams.size() ) {
+            Set<Parameter> unaccountedToParams = new HashSet<>( toParams );
+
+            for ( Parameter fromParam : fromParams ) {
+                // each fromParam needs at least one match, and all toParam need to be accounted for at the end
+                boolean hasMatch = false;
+                for ( Parameter toParam : toParams ) {
+                    if ( fromParam.getType().isAssignableTo( toParam.getType() ) ) {
+                        unaccountedToParams.remove( toParam );
+                        hasMatch = true;
+                    }
+                }
+
+                if ( !hasMatch ) {
+                    return false;
+                }
+            }
+
+            return unaccountedToParams.isEmpty();
+        }
+
+        return false;
+    }
+
+    /**
+     * @param parameters the parameter list to check
+     * @return {@code true} if the parameter list contains a parameter annotated with {@code @TargetType}
+     */
+    public static boolean containsTargetTypeParameter(List<Parameter> parameters) {
+        return parameters.stream().anyMatch( Parameter::isTargetType );
     }
 
     private boolean determineIfIsObjectFactory() {
@@ -403,8 +267,8 @@ public class SourceMethod implements Method {
         if ( isStreamMapping == null ) {
             isStreamMapping = getSourceParameters().size() == 1
                 && ( getMappingSourceType().isIterableType() && getResultType().isStreamType()
-                    || getMappingSourceType().isStreamType() && getResultType().isIterableType()
-                    || getMappingSourceType().isStreamType() && getResultType().isStreamType() );
+                || getMappingSourceType().isStreamType() && getResultType().isIterableType()
+                || getMappingSourceType().isStreamType() && getResultType().isStreamType() );
         }
         return isStreamMapping;
     }
@@ -484,31 +348,6 @@ public class SourceMethod implements Method {
         return applicableReversePrototypeMethods;
     }
 
-    private static boolean allParametersAreAssignable(List<Parameter> fromParams, List<Parameter> toParams) {
-        if ( fromParams.size() == toParams.size() ) {
-            Set<Parameter> unaccountedToParams = new HashSet<>( toParams );
-
-            for ( Parameter fromParam : fromParams ) {
-                // each fromParam needs at least one match, and all toParam need to be accounted for at the end
-                boolean hasMatch = false;
-                for ( Parameter toParam : toParams ) {
-                    if ( fromParam.getType().isAssignableTo( toParam.getType() ) ) {
-                        unaccountedToParams.remove( toParam );
-                        hasMatch = true;
-                    }
-                }
-
-                if ( !hasMatch ) {
-                    return false;
-                }
-            }
-
-            return unaccountedToParams.isEmpty();
-        }
-
-        return false;
-    }
-
     /**
      * Whether an implementation of this method must be generated or not.
      *
@@ -519,19 +358,37 @@ public class SourceMethod implements Method {
         return declaringMapper == null && executable.getModifiers().contains( Modifier.ABSTRACT );
     }
 
+    /**
+     * Checks if this method is annotated with @ReferenceMapping.
+     *
+     * @return true if this method has @ReferenceMapping annotation
+     */
+    public boolean isReferenceMapping() {
+        return referenceMappingAnnotation != null;
+    }
+
+    /**
+     * Gets the @ReferenceMapping annotation gem for this method.
+     *
+     * @return the ReferenceMappingGem or null if not present
+     */
+    public org.mapstruct.ap.internal.gem.ReferenceMappingGem getReferenceMappingAnnotation() {
+        return referenceMappingAnnotation;
+    }
+
+    /**
+     * Checks if this method is annotated with @ReferenceMapping.
+     *
+     * @return true if the method has @ReferenceMapping annotation, false otherwise
+     */
+    public boolean hasReferenceMapping() {
+        return referenceMappingAnnotation != null;
+    }
+
     @Override
     public boolean matches(List<Type> sourceTypes, Type targetType) {
         MethodMatcher matcher = new MethodMatcher( typeUtils, typeFactory, this );
         return matcher.matches( sourceTypes, targetType );
-    }
-
-    /**
-     * @param parameters the parameter list to check
-     *
-     * @return {@code true} if the parameter list contains a parameter annotated with {@code @TargetType}
-     */
-    public static boolean containsTargetTypeParameter(List<Parameter> parameters) {
-        return parameters.stream().anyMatch( Parameter::isTargetType );
     }
 
     @Override
@@ -610,6 +467,180 @@ public class SourceMethod implements Method {
                 .map( Parameter::describe )
                 .collect( Collectors.joining( ", " ) );
             return getResultType().describe() + " " + mapper + getName() + "(" + sourceTypes + ")";
+        }
+    }
+
+    public static class Builder {
+
+        private Type declaringMapper = null;
+        private Type definingType = null;
+        private ExecutableElement executable;
+        private List<Parameter> parameters;
+        private Type returnType = null;
+        private List<Type> exceptionTypes;
+        private Set<MappingOptions> mappings;
+        private IterableMappingOptions iterableMapping = null;
+        private MapMappingOptions mapMapping = null;
+        private BeanMappingOptions beanMapping = null;
+        private TypeUtils typeUtils;
+        private TypeFactory typeFactory = null;
+        private MapperOptions mapper = null;
+        private List<SourceMethod> prototypeMethods = Collections.emptyList();
+        private List<ValueMappingOptions> valueMappings;
+        private EnumMappingOptions enumMappingOptions;
+        private ParameterProvidedMethods contextProvidedMethods;
+        private Set<ConditionOptions> conditionOptions;
+        private List<Type> typeParameters;
+        private Set<SubclassMappingOptions> subclassMappings;
+        private org.mapstruct.ap.internal.gem.ReferenceMappingGem referenceMappingAnnotation;
+
+        private boolean verboseLogging;
+        private SubclassValidator subclassValidator;
+
+        public Builder setDeclaringMapper(Type declaringMapper) {
+            this.declaringMapper = declaringMapper;
+            return this;
+        }
+
+        public Builder setExecutable(ExecutableElement executable) {
+            this.executable = executable;
+            return this;
+        }
+
+        public Builder setParameters(List<Parameter> parameters) {
+            this.parameters = parameters;
+            return this;
+        }
+
+        public Builder setReturnType(Type returnType) {
+            this.returnType = returnType;
+            return this;
+        }
+
+        public Builder setExceptionTypes(List<Type> exceptionTypes) {
+            this.exceptionTypes = exceptionTypes;
+            return this;
+        }
+
+        public Builder setMappingOptions(Set<MappingOptions> mappings) {
+            this.mappings = mappings;
+            return this;
+        }
+
+        public Builder setIterableMappingOptions(IterableMappingOptions iterableMapping) {
+            this.iterableMapping = iterableMapping;
+            return this;
+        }
+
+        public Builder setMapMappingOptions(MapMappingOptions mapMapping) {
+            this.mapMapping = mapMapping;
+            return this;
+        }
+
+        public Builder setBeanMappingOptions(BeanMappingOptions beanMapping) {
+            this.beanMapping = beanMapping;
+            return this;
+        }
+
+        public Builder setValueMappingOptionss(List<ValueMappingOptions> valueMappings) {
+            this.valueMappings = valueMappings;
+            return this;
+        }
+
+        public Builder setEnumMappingOptions(EnumMappingOptions enumMappingOptions) {
+            this.enumMappingOptions = enumMappingOptions;
+            return this;
+        }
+
+        public Builder setSubclassMappings(Set<SubclassMappingOptions> subclassMappings) {
+            this.subclassMappings = subclassMappings;
+            return this;
+        }
+
+        public Builder setSubclassValidator(SubclassValidator subclassValidator) {
+            this.subclassValidator = subclassValidator;
+            return this;
+        }
+
+        public Builder setTypeUtils(TypeUtils typeUtils) {
+            this.typeUtils = typeUtils;
+            return this;
+        }
+
+        public Builder setTypeFactory(TypeFactory typeFactory) {
+            this.typeFactory = typeFactory;
+            return this;
+        }
+
+        public Builder setMapper(MapperOptions mapper) {
+            this.mapper = mapper;
+            return this;
+        }
+
+        public Builder setPrototypeMethods(List<SourceMethod> prototypeMethods) {
+            this.prototypeMethods = prototypeMethods;
+            return this;
+        }
+
+        public Builder setDefiningType(Type definingType) {
+            this.definingType = definingType;
+            return this;
+        }
+
+        public Builder setContextProvidedMethods(ParameterProvidedMethods contextProvidedMethods) {
+            this.contextProvidedMethods = contextProvidedMethods;
+            return this;
+        }
+
+        public Builder setConditionOptions(Set<ConditionOptions> conditionOptions) {
+            this.conditionOptions = conditionOptions;
+            return this;
+        }
+
+        public Builder setVerboseLogging(boolean verboseLogging) {
+            this.verboseLogging = verboseLogging;
+            return this;
+        }
+
+        public Builder setReferenceMappingAnnotation(
+            org.mapstruct.ap.internal.gem.ReferenceMappingGem referenceMappingAnnotation) {
+            this.referenceMappingAnnotation = referenceMappingAnnotation;
+            return this;
+        }
+
+        public SourceMethod build() {
+
+            if ( mappings == null ) {
+                mappings = Collections.emptySet();
+            }
+
+            if ( subclassMappings == null ) {
+                subclassMappings = Collections.emptySet();
+            }
+
+            MappingMethodOptions mappingMethodOptions = new MappingMethodOptions(
+                mapper,
+                mappings,
+                iterableMapping,
+                mapMapping,
+                beanMapping,
+                enumMappingOptions,
+                valueMappings,
+                subclassMappings,
+                subclassValidator
+            );
+
+            ConditionMethodOptions conditionMethodOptions =
+                conditionOptions != null ? new ConditionMethodOptions( conditionOptions ) :
+                    ConditionMethodOptions.empty();
+
+            this.typeParameters = this.executable.getTypeParameters()
+                .stream()
+                .map( Element::asType )
+                .map( typeFactory::getType )
+                .collect( Collectors.toList() );
+
+            return new SourceMethod( this, mappingMethodOptions, conditionMethodOptions );
         }
     }
 }
